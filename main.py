@@ -20,6 +20,7 @@ Functions:
 # Requirements and constants
 import os
 import time
+import torch
 import argparse
 import numpy as np
 import pandas as pd
@@ -36,6 +37,7 @@ from tqdm.auto import tqdm
 # %% ---- 2023-07-06 ------------------------
 # Function and class
 
+parallel = 3
 parser = argparse.ArgumentParser(description="Speed test for joblib parallel")
 parser.add_argument('--parallel', '-p', type=int,
                     default=10, dest='parallel', help='Number of parallel workload, default 10')
@@ -46,8 +48,18 @@ parallel = args.parallel
 # os._exit(0)
 
 
-def interpolate(src, dst, ratio):
-    return (src * ratio + dst * (1-ratio)).astype(np.uint8)
+def interpolate(src, dst, ratio, use_cuda_flag=False):
+    if use_cuda_flag:
+        src = torch.Tensor(src).cuda()
+        dst = torch.Tensor(dst).cuda()
+        return (src * ratio + dst * (1-ratio)).cpu().numpy().astype(np.uint8)
+
+    else:
+        return (src * ratio + dst * (1-ratio)).astype(np.uint8)
+
+
+def interpolate_cuda(src, dst, ratio):
+    return (src * ratio + dst * (1-ratio)).type(torch.uint8)
 
 
 # %% ---- 2023-07-06 ------------------------
@@ -59,17 +71,38 @@ m1 = np.array(img1)
 m2 = np.array(img2)
 print(m1.shape, m2.shape)
 
+img = Image.fromarray((m1/2+m2/2).astype(np.uint8))
+img
 
 # %%
 m_list = [[m1.copy(), r] for r in np.linspace(0, 1, parallel, endpoint=False)]
 
+m_list_cuda = [[torch.Tensor(m1).cuda(), r]
+               for r in np.linspace(0, 1, parallel, endpoint=False)]
+m2_cuda = torch.Tensor(m2).cuda()
 
-def test_session_1():
+
+def test_session_3():
+    tic = time.time()
+
+    result = []
+
+    for m, r in tqdm(m_list_cuda):
+        result.append(interpolate_cuda(m, m2_cuda, r))
+
+    toc = time.time()
+    cost = toc - tic
+    # print('Cuda costs {} seconds'.format(cost))
+
+    return cost, result
+
+
+def test_session_1(use_cuda_flag):
     tic = time.time()
     result = []
 
     for m, r in tqdm(m_list):
-        result.append(interpolate(m, m2, r))
+        result.append(interpolate(m, m2, r, use_cuda_flag))
 
     toc = time.time()
     cost = toc - tic
@@ -95,14 +128,23 @@ def test_session_2():
 
 costs = []
 
+# ----------------------------------------------------------------
 tic = time.time()
-for i in tqdm(range(10), 'forLoop test'):
-    cost, result = test_session_1()
-    costs.append((cost, 'epoch-{}'.format(i), 'forLoop'))
+for i in tqdm(range(10), 'forLoop test GPU'):
+    cost, result = test_session_1(use_cuda_flag=True)
+    costs.append((cost, 'epoch-{}'.format(i), 'GPU'))
 toc = time.time()
-costs.append((toc - tic, 'total', 'forLoop'))
+costs.append((toc - tic, 'total', 'GPU'))
 
+# ----------------------------------------------------------------
+tic = time.time()
+for i in tqdm(range(10), 'forLoop test CPU'):
+    cost, result = test_session_1(use_cuda_flag=False)
+    costs.append((cost, 'epoch-{}'.format(i), 'CPU'))
+toc = time.time()
+costs.append((toc - tic, 'total', 'CPU'))
 
+# ----------------------------------------------------------------
 tic = time.time()
 for i in tqdm(range(10), 'parallel test'):
     cost, result = test_session_2()
@@ -110,6 +152,13 @@ for i in tqdm(range(10), 'parallel test'):
 toc = time.time()
 costs.append((toc - tic, 'total', 'parallel'))
 
+# ----------------------------------------------------------------
+tic = time.time()
+for i in tqdm(range(10), 'cuda test'):
+    cost, result = test_session_3()
+    costs.append((cost, 'epoch-{}'.format(i), 'cuda'))
+toc = time.time()
+costs.append((toc - tic, 'total', 'cuda'))
 
 # %%
 df = pd.DataFrame(costs, columns=['cost', 'name', 'method'])
@@ -117,8 +166,6 @@ df['type'] = df['name'].map(lambda s: s.split('-')[0])
 df['parallel'] = parallel
 df.to_csv('result-parallel-{}.csv'.format(parallel))
 print(df)
-
-# input('done.')
 
 # %%
 fig, axs = plt.subplots(1, 2, figsize=(8, 4))
@@ -139,7 +186,6 @@ ax = setup_ax(axs[1], 'Total compare')
 sns.pointplot(df.query('type == "total"'), x='method',
               hue='method', y='cost',  ax=ax)
 
-
 fig.suptitle('Time cost compare (10 epochs & {} parallel)'.format(parallel))
 fig.tight_layout()
 fig.savefig('result-parallel-{}.jpg'.format(parallel))
@@ -148,8 +194,6 @@ fig.savefig('result-parallel-{}.jpg'.format(parallel))
 
 # %% ---- 2023-07-06 ------------------------
 # Pending
-# display(Image.fromarray(result[2]))
-# display(Image.fromarray(result[2]))
 
 # %% ---- 2023-07-06 ------------------------
 # Pending
